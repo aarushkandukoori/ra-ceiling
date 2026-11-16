@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RA Ceiling Explorer</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1a1a1a; --muted:#5b5b5b; --line:#d8d8d8; --c1:#0072B2; --c2:#D55E00; --c3:#009E73; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#ececec; --muted:#a8a8a8; --line:#3a3a3a; --c1:#56B4E9; --c2:#E69F00; --c3:#2fbf8f; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  .controls { display:grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin-bottom: 18px; }
+  @media (max-width: 560px) { .controls { grid-template-columns: 1fr; } }
+  label { display:block; font-size:13px; color:var(--muted); }
+  label b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  input[type=range] { width:100%; }
+  .nums { display:grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 8px 0 18px; }
+  @media (max-width: 560px) { .nums { grid-template-columns: 1fr; } }
+  .num { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .num .k { font-size:12px; color:var(--muted); }
+  .num .v { font-size:22px; font-variant-numeric: tabular-nums; }
+  .num .s { font-size:12px; color:var(--muted); font-variant-numeric: tabular-nums; }
+  svg { width:100%; height:auto; display:block; }
+  .note { font-size: 13px; color: var(--muted); }
+  #verdict { font-weight: 600; }
+  footer { margin-top: 32px; font-size: 13px; color: var(--muted); }
+  a { color: var(--c1); }
+</style>
+</head>
+<body>
+<main>
+<h1>RA ceiling explorer</h1>
+<p class="lead">One categorical field, scored the way the ProxyDrift paper (arXiv 2608.08245, Sec. 4) scores it: JS distance to production, rescaled so 1 = identical and 0 = a random shuffle of the eval set's own value shares. Production is a known Zipf-shaped field. The eval set is n records drawn from it, with a share lambda of them drawn from a drifted version (same values, order reversed). Independent simulation; not affiliated with the paper's authors or Microsoft.</p>
+
+<div class="controls">
+  <label>Eval-set size n: <b id="nv"></b><input id="n" type="range" min="0" max="100" value="50"></label>
+  <label>Number of values K: <b id="kv"></b><input id="k" type="range" min="2" max="25" value="25"></label>
+  <label>Skew s (Zipf exponent, 0 = flat): <b id="sv"></b><input id="s" type="range" min="0" max="30" value="10"></label>
+  <label>Drifted share lambda: <b id="lv"></b><input id="l" type="range" min="0" max="50" value="5"></label>
+</div>
+
+<div class="nums">
+  <div class="num"><div class="k">Ceiling: score of a perfect sample</div><div class="v" id="ceil">-</div><div class="s" id="ceilr"></div></div>
+  <div class="num"><div class="k">Score of the drifted eval set</div><div class="v" id="score">-</div><div class="s" id="scorer"></div></div>
+  <div class="num"><div class="k">Shuffle baseline (chance distance)</div><div class="v" id="base">-</div><div class="s" id="based"></div></div>
+</div>
+<p id="verdict"></p>
+
+<svg id="chart" viewBox="0 0 720 260" role="img" aria-label="Ceiling and drifted score against eval-set size"></svg>
+<p class="note">Lines are means over 200 simulated eval sets; shaded bands are the 5th to 95th percentiles. Blue = perfect sample (the ceiling), orange = drifted eval set at the chosen lambda. The dashed line marks the current n. 500 shuffles per baseline here (the paper uses 50,000; the difference is far below the band width). Code, tests and the full 21-field version: <a href="https://github.com/aarushkandukoori/ra-ceiling">github.com/aarushkandukoori/ra-ceiling</a>.</p>
+
+<footer>Made by Aarush Kandukoori</footer>
+</main>
+
+<script>
+// ---- core (mirrors ra_ceiling/ra.py for one field) ----
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function zipf(k, s) { const w = []; let z = 0; for (let i = 1; i <= k; i++) { const v = 1 / Math.pow(i, s); w.push(v); z += v; } return w.map(v => v / z); }
+function jsd(p, q) {
+  let d = 0;
+  for (let i = 0; i < p.length; i++) {
+    const m = 0.5 * (p[i] + q[i]);
+    if (p[i] > 0) d += 0.5 * p[i] * Math.log2(p[i] / m);
+    if (q[i] > 0) d += 0.5 * q[i] * Math.log2(q[i] / m);
+  }
+  return Math.sqrt(Math.min(1, Math.max(0, d)));
+}
+function shuffle(a, rnd) { const b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = b[i]; b[i] = b[j]; b[j] = t; } return b; }
+function baseline(p, o, T, rnd) { let s = 0; for (let t = 0; t < T; t++) s += jsd(p, shuffle(o, rnd)); return s / T; }
+function sampleHist(cdf, n, rnd) {
+  const c = new Array(cdf.length).fill(0);
+  for (let r = 0; r < n; r++) { const u = rnd(); let lo = 0, hi = cdf.length - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (cdf[mid] < u) lo = mid + 1; else hi = mid; } c[lo]++; }
+  return c.map(v => v / n);
+}
+function cdfOf(p) { const c = []; let s = 0; for (const v of p) { s += v; c.push(s); } c[c.length - 1] = 1; return c; }
+function align(p, o, T, rnd) { const d = jsd(p, o); const b = baseline(p, o, T, rnd); return { a: b > 0 ? Math.max(0, 1 - d / b) : 0, d, b }; }
+function quant(xs, q) { const s = xs.slice().sort((a, b) => a - b); const pos = (s.length - 1) * q; const lo = Math.floor(pos), hi = Math.ceil(pos); return s[lo] + (s[hi] - s[lo]) * (pos - lo); }
+function stats(xs) { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return { mean: m, p05: quant(xs, 0.05), p95: quant(xs, 0.95) }; }
+// One setting: ceiling, drifted score, baseline. R simulated eval sets, T shuffles each.
+function simulate(n, k, s, lam, R, T, seed) {
+  const rnd = mulberry32(seed);
+  const p = zipf(k, s);
+  const rev = p.slice().reverse();
+  const mix = p.map((v, i) => (1 - lam) * v + lam * rev[i]);
+  const cp = cdfOf(p), cm = cdfOf(mix);
+  const ceil = [], score = [], base = [], dist = [];
+  for (let r = 0; r < R; r++) {
+    const x = align(p, sampleHist(cp, n, rnd), T, rnd); ceil.push(x.a); base.push(x.b); dist.push(x.d);
+    score.push(align(p, sampleHist(cm, n, rnd), T, rnd).a);
+  }
+  return { ceil: stats(ceil), score: stats(score), base: stats(base), dist: stats(dist) };
+}
+if (typeof module !== "undefined") module.exports = { simulate, jsd, zipf };
+
+// ---- page ----
+if (typeof document !== "undefined") {
+  const $ = id => document.getElementById(id);
+  const nOf = v => Math.round(Math.pow(10, 2 + 2 * v / 100));           // 100 .. 10,000 on a log scale
+  const NS = [100, 200, 500, 1000, 2000, 5000, 10000];
+  const f3 = x => x.toFixed(3);
+  let timer = null;
+  function read() { return { n: nOf(+$("n").value), k: +$("k").value, s: +$("s").value / 10, lam: +$("l").value / 100 }; }
+  function labels() { const c = read(); $("nv").textContent = c.n.toLocaleString(); $("kv").textContent = c.k; $("sv").textContent = c.s.toFixed(1); $("lv").textContent = c.lam.toFixed(2); }
+  function draw(curve, n) {
+    const W = 720, H = 260, L = 48, Rm = 12, Tm = 12, B = 40;
+    const x = v => L + (Math.log10(v) - 2) / 2 * (W - L - Rm);
+    const y = v => Tm + (1 - v) * (H - Tm - B);
+    const css = getComputedStyle(document.documentElement);
+    const c1 = css.getPropertyValue("--c1"), c2 = css.getPropertyValue("--c2"), line = css.getPropertyValue("--line"), muted = css.getPropertyValue("--muted");
+    let g = "";
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) g += `<line x1="${L}" x2="${W - Rm}" y1="${y(t)}" y2="${y(t)}" stroke="${line}"/><text x="${L - 8}" y="${y(t) + 4}" text-anchor="end" font-size="12" fill="${muted}">${t}</text>`;
+    for (const v of NS) g += `<text x="${x(v)}" y="${H - B + 18}" text-anchor="middle" font-size="12" fill="${muted}">${v.toLocaleString()}</text>`;
+    g += `<text x="${(L + W) / 2}" y="${H - 4}" text-anchor="middle" font-size="12" fill="${muted}">eval-set size n (log scale)</text>`;
+    g += `<text transform="translate(12 ${(H - B) / 2}) rotate(-90)" text-anchor="middle" font-size="12" fill="${muted}">field alignment a</text>`;
+    for (const [key, col] of [["ceil", c1], ["score", c2]]) {
+      const up = curve.map(r => `${x(r.n)},${y(r[key].p95)}`).join(" ");
+      const dn = curve.slice().reverse().map(r => `${x(r.n)},${y(r[key].p05)}`).join(" ");
+      g += `<polygon points="${up} ${dn}" fill="${col}" opacity="0.18"/>`;
+      g += `<polyline points="${curve.map(r => `${x(r.n)},${y(r[key].mean)}`).join(" ")}" fill="none" stroke="${col}" stroke-width="2"/>`;
+    }
+    g += `<line x1="${x(n)}" x2="${x(n)}" y1="${Tm}" y2="${H - B}" stroke="${muted}" stroke-dasharray="4 4"/>`;
+    $("chart").innerHTML = g;
+  }
+  function update() {
+    const c = read();
+    const one = simulate(c.n, c.k, c.s, c.lam, 200, 500, 12345);
+    $("ceil").textContent = f3(one.ceil.mean); $("ceilr").textContent = `5-95%: ${f3(one.ceil.p05)} to ${f3(one.ceil.p95)}`;
+    $("score").textContent = f3(one.score.mean); $("scorer").textContent = `5-95%: ${f3(one.score.p05)} to ${f3(one.score.p95)}`;
+    $("base").textContent = f3(one.base.mean); $("based").textContent = `a perfect sample sits at distance ${f3(one.dist.mean)}`;
+    let v;
+    if (c.s === 0) v = "With a perfectly flat production field every shuffle of the eval set is equally close, so the score is 0 whatever the eval set looks like.";
+    else if (c.lam === 0) v = "No drift: the score is the ceiling itself. Anything near this band is as good as a perfect sample of this size.";
+    else if (one.score.mean < one.ceil.p05) v = `This drift shows: the drifted set's average score is below the ceiling's 5th percentile.`;
+    else v = `This drift is hidden at n = ${c.n.toLocaleString()}: the drifted set's average score sits inside the ceiling band.`;
+    $("verdict").textContent = v;
+    draw(NS.map(n => ({ n, ...simulate(n, c.k, c.s, c.lam, 100, 200, 777) })), c.n);
+  }
+  for (const id of ["n", "k", "s", "l"]) $(id).addEventListener("input", () => { labels(); clearTimeout(timer); timer = setTimeout(update, 120); });
+  labels(); update();
+}
+</script>
+</body>
+</html>

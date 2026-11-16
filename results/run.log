@@ -1,0 +1,12 @@
+E1 s=0.25 done 17s
+E1 s=1.0 done 35s
+E1 s=2.0 done 54s
+E1 single done 59s
+E2 done 62s
+E3 n=200 done 70s
+E3 n=1000 done 77s
+E3 n=5000 done 86s
+E3 detect done 1252s
+E3 dropped done 1271s
+E4 done 1361s
+all done 1362s
