@@ -6,7 +6,7 @@ The ProxyDrift paper (Levit et al., arXiv 2608.08245, Sec. 4) scores an eval set
 
 This is an independent simulation. It is not affiliated with the paper's authors or with Microsoft, and it uses no real user data.
 
-Interactive page: https://aarushkandukoori.com/ra-ceiling/
+Interactive page: https://aarushkandukoori.github.io/ra-ceiling/
 
 ## Main numbers
 
