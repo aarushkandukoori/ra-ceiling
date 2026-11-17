@@ -28,6 +28,12 @@
   #verdict { font-weight: 600; }
   footer { margin-top: 32px; font-size: 13px; color: var(--muted); }
   a { color: var(--c1); }
+  .agg { border-top:1px solid var(--line); margin-top:32px; padding-top:20px; }
+  .agg h2 { font-size:18px; margin:0 0 4px; }
+  textarea, input[type=number] { width:100%; font:14px/1.4 ui-monospace, Menlo, monospace; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  textarea { min-height:52px; resize:vertical; }
+  button { font:14px/1 inherit; padding:8px 14px; border-radius:6px; border:1px solid var(--line); background:var(--c1); color:#fff; cursor:pointer; }
+  .err { color: var(--c2); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -51,6 +57,25 @@
 
 <svg id="chart" viewBox="0 0 720 260" role="img" aria-label="Ceiling and drifted score against eval-set size"></svg>
 <p class="note">Lines are means over 200 simulated eval sets; shaded bands are the 5th to 95th percentiles. Blue = perfect sample (the ceiling), orange = drifted eval set at the chosen lambda. The dashed line marks the current n. 500 shuffles per baseline here (the paper uses 50,000; the difference is far below the band width). Code, tests and the full 21-field version: <a href="https://github.com/aarushkandukoori/ra-ceiling">github.com/aarushkandukoori/ra-ceiling</a>.</p>
+
+<section class="agg" id="aggregates">
+<h2>Aggregates only mode</h2>
+<p class="lead">For when production records cannot be sampled. Paste one field's production value shares (or counts) as aggregated, and the eval-set size n. The page returns the score a perfect n-record sample would get and its spread, from a closed formula and from simulated draws of those shares. Add the eval set's own counts to get its RA field score, the noise-adjusted score and how far it sits below the ceiling. Everything runs in your browser; nothing is sent anywhere.</p>
+<div class="controls">
+  <label>Production shares or counts, one field (comma separated)<textarea id="aggP">40, 20, 13, 10, 8, 5, 3, 1</textarea></label>
+  <label>Eval-set counts for the same values (optional)<textarea id="aggO">88, 41, 22, 25, 12, 7, 5, 0</textarea></label>
+  <label>Eval-set size n (used when no eval counts are given)<input id="aggN" type="number" min="10" max="1000000" value="1000"></label>
+  <label>&nbsp;<button id="aggGo" type="button">Compute</button></label>
+</div>
+<p class="err" id="aggErr"></p>
+<div class="nums">
+  <div class="num"><div class="k">Ceiling, closed formula</div><div class="v" id="aggC">-</div><div class="s" id="aggCs"></div></div>
+  <div class="num"><div class="k">Ceiling, simulated from the shares</div><div class="v" id="aggM">-</div><div class="s" id="aggMs"></div></div>
+  <div class="num"><div class="k">Eval set: RA field score / noise-adjusted</div><div class="v" id="aggA">-</div><div class="s" id="aggAs"></div></div>
+</div>
+<p id="aggVerdict"></p>
+<p class="note">Closed formula: E[d] = m(K-1) / sqrt(8 n ln 2), with m(k) = E[sqrt of a chi-square with k degrees of freedom], over a shuffle baseline b(n) = sqrt(B^2 + (K-1)/(8 n ln 2)), where B is the mean JS distance between the shares and a shuffle of themselves. K counts values with a nonzero share. It is rough for near-flat fields at small n (use the simulated number there). Noise-adjusted score = min(1, RA / ceiling). Gap = (ceiling - RA) / ceiling sd; above 1.645 means the eval set is below where 95% of perfect samples land. One field only: a total over many fields also needs the field weights, and its spread needs pairwise co-occurrence tables (see the repo README).</p>
+</section>
 
 <footer>Made by Aarush Kandukoori</footer>
 </main>
@@ -93,7 +118,22 @@ function simulate(n, k, s, lam, R, T, seed) {
   }
   return { ceil: stats(ceil), score: stats(score), base: stats(base), dist: stats(dist) };
 }
-if (typeof module !== "undefined") module.exports = { simulate, jsd, zipf };
+// ---- aggregates only (mirrors ra_ceiling/aggregate.py) ----
+function lgamma(x) { const g = 7, c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (x < 0.5) return Math.log(Math.PI / Math.abs(Math.sin(Math.PI * x))) - lgamma(1 - x);
+  x -= 1; let a = c[0]; const t = x + g + 0.5; for (let i = 1; i < g + 2; i++) a += c[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a); }
+function chiMeanSqrt(k) { return k <= 0 ? 0 : Math.SQRT2 * Math.exp(lgamma((k + 1) / 2) - lgamma(k / 2)); }
+function selfBaseline(p, T, rnd) { return baseline(p, p, T, rnd); }
+function fieldCeiling(p, n, B) {
+  if (B <= 0) return { mean: 0, sd: 0 };
+  const k = p.filter(v => v > 0).length - 1, sc = 1 / Math.sqrt(8 * n * Math.LN2), m = chiMeanSqrt(k);
+  const b = Math.sqrt(B * B + k / (8 * n * Math.LN2));
+  return { mean: Math.max(0, 1 - m * sc / b), sd: Math.sqrt(Math.max(0, k - m * m)) * sc / b };
+}
+function fieldCeilingSim(p, n, R, T, rnd) { const cp = cdfOf(p), xs = []; for (let r = 0; r < R; r++) xs.push(align(p, sampleHist(cp, n, rnd), T, rnd).a); const st = stats(xs); const sd = Math.sqrt(xs.reduce((a, v) => a + (v - st.mean) ** 2, 0) / (xs.length - 1)); return { ...st, sd }; }
+function noiseAdjusted(ra, cm, cs) { return { score: cm > 0 ? Math.min(1, ra / cm) : 0, gap: cs > 0 ? (cm - ra) / cs : Infinity }; }
+if (typeof module !== "undefined") module.exports = { simulate, jsd, zipf, chiMeanSqrt, fieldCeiling, fieldCeilingSim, selfBaseline, noiseAdjusted, mulberry32, align };
 
 // ---- page ----
 if (typeof document !== "undefined") {
@@ -140,6 +180,33 @@ if (typeof document !== "undefined") {
   }
   for (const id of ["n", "k", "s", "l"]) $(id).addEventListener("input", () => { labels(); clearTimeout(timer); timer = setTimeout(update, 120); });
   labels(); update();
+  // aggregates-only panel
+  function parseList(t) { const v = t.split(/[\s,;]+/).filter(x => x !== "").map(Number); return v; }
+  function aggUpdate() {
+    $("aggErr").textContent = "";
+    const raw = parseList($("aggP").value), oraw = parseList($("aggO").value);
+    if (raw.length < 2 || raw.some(v => !isFinite(v) || v < 0) || raw.reduce((a, b) => a + b, 0) <= 0) { $("aggErr").textContent = "Production: give at least two non-negative numbers."; return; }
+    const tot = raw.reduce((a, b) => a + b, 0), p = raw.map(v => v / tot);
+    let n = Math.round(+$("aggN").value), o = null;
+    if (oraw.length) {
+      if (oraw.length !== raw.length || oraw.some(v => !isFinite(v) || v < 0 || Math.round(v) !== v) || oraw.reduce((a, b) => a + b, 0) <= 0) { $("aggErr").textContent = "Eval counts: give whole numbers, one per production value."; return; }
+      n = oraw.reduce((a, b) => a + b, 0); o = oraw.map(v => v / n); $("aggN").value = n;
+    }
+    if (!(n >= 10)) { $("aggErr").textContent = "n must be at least 10."; return; }
+    const rnd = mulberry32(2026);
+    const B = selfBaseline(p, 5000, rnd);
+    const cf = fieldCeiling(p, n, B), sim = fieldCeilingSim(p, n, 300, 500, rnd);
+    $("aggC").textContent = f3(cf.mean); $("aggCs").textContent = `sd ${f3(cf.sd)}; shuffle baseline B = ${f3(B)}`;
+    $("aggM").textContent = f3(sim.mean); $("aggMs").textContent = `5-95%: ${f3(sim.p05)} to ${f3(sim.p95)}; sd ${f3(sim.sd)}`;
+    if (o) {
+      const a = align(p, o, 5000, rnd).a, na = noiseAdjusted(a, sim.mean, sim.sd);
+      $("aggA").textContent = `${f3(a)} / ${f3(na.score)}`; $("aggAs").textContent = `gap ${isFinite(na.gap) ? na.gap.toFixed(1) : "-"} ceiling sds below the ceiling`;
+      $("aggVerdict").textContent = B <= 0 ? "Production is flat, so every shuffle is equally close and the RA field score is 0 for any eval set." :
+        na.gap > 1.645 ? "Below the ceiling band: this gap is larger than chance for a perfect sample of this size." : "Inside the ceiling band: at this n the eval set is as close as a perfect sample would be.";
+    } else { $("aggA").textContent = "-"; $("aggAs").textContent = "add eval counts"; $("aggVerdict").textContent = ""; }
+  }
+  $("aggGo").addEventListener("click", aggUpdate);
+  aggUpdate();
 }
 </script>
 </body>
