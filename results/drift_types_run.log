@@ -1,0 +1,13 @@
+n=200 reverse_all done 21s
+n=200 swap_top2_all done 31s
+n=200 flatten_all done 40s
+n=200 reverse_3 done 49s
+n=200 reverse_1 done 59s
+n=200 spike_1 done 69s
+n=1000 reverse_all done 87s
+n=1000 swap_top2_all done 97s
+n=1000 flatten_all done 106s
+n=1000 reverse_3 done 115s
+n=1000 reverse_1 done 125s
+n=1000 spike_1 done 133s
+all done 133s
